@@ -23,7 +23,7 @@ process_url() {
     # Skip if URL has already been processed (check checkpoint)
     if grep -q "^${url}:" "$CHECKPOINT_FILE" 2>/dev/null; then
         return
-    }
+    fi
 
     # Log start of processing
     log_message "Thread $thread_id processing: $url"
@@ -106,4 +106,3 @@ log_message "Process completed"
 total_processed=$(($(wc -l < "$CHECKPOINT_FILE")))
 total_modified=$(grep -c ":http" "$CHECKPOINT_FILE")
 log_message "Summary: Processed $total_processed URLs, Modified $total_modified URLs"
-
