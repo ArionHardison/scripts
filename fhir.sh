@@ -23,6 +23,12 @@ sanitize_filename() {
     echo "$url" | sed 's|.*/\([^/]*\)\.json\.html|\1.json|'
 }
 
+# Function to check if content is 404
+is_404() {
+    local content="$1"
+    [[ "$content" =~ "HL7 - 404 File Not Found" ]]
+}
+
 # Function to process a single URL
 process_url() {
     local url="$1"
@@ -37,23 +43,47 @@ process_url() {
     # Log start of processing
     log_message "Thread $thread_id processing: $url"
 
-    # Get the content and extract JSON
+    # Get the content
     response=$(curl -s "$url")
-    if [[ $response =~ \<pre[^>]*class=\"json\"[^>]*\>(.*)\</pre\> ]]; then
-        json_content="${BASH_REMATCH[1]}"
-        
+    
+    # Check if it's a 404 page
+    if is_404 "$response"; then
+        log_message "Thread $thread_id found 404: $url"
+        echo "${url}:404" >> "$CHECKPOINT_FILE"
+        return
+    fi
+
+    # Create a temporary file for the response
+    temp_response_file="$TEMP_DIR/response_${thread_id}.html"
+    echo "$response" > "$temp_response_file"
+
+    # Extract JSON content using a more reliable method
+    json_content=$(awk '/<pre class="json"/{p=1;next} /<\/pre>/{p=0} p' "$temp_response_file" | sed 's/&lt;/</g' | sed 's/&gt;/>/g')
+
+    if [[ -n "$json_content" ]]; then
         # Create filename from URL
         filename=$(sanitize_filename "$url")
         
         # Save JSON content to file
         echo "$json_content" > "$JSON_DIR/$filename"
         
-        log_message "Thread $thread_id saved JSON to: $filename"
-        echo "${url}:saved" >> "$CHECKPOINT_FILE"
+        # Verify the file was created and has content
+        if [[ -s "$JSON_DIR/$filename" ]]; then
+            log_message "Thread $thread_id saved JSON to: $filename ($(wc -l < "$JSON_DIR/$filename") lines)"
+            echo "${url}:saved" >> "$CHECKPOINT_FILE"
+        else
+            log_message "Thread $thread_id failed: Empty file created for $url"
+            echo "${url}:failed" >> "$CHECKPOINT_FILE"
+        fi
     else
         log_message "Thread $thread_id failed to extract JSON from: $url"
+        # Debug: Save the response for inspection
+        cp "$temp_response_file" "$TEMP_DIR/failed_${thread_id}_$(basename "$url").html"
         echo "${url}:failed" >> "$CHECKPOINT_FILE"
     fi
+
+    # Cleanup temporary response file
+    rm -f "$temp_response_file"
 
     # Update progress
     processed=$(($(wc -l < "$CHECKPOINT_FILE")))
@@ -89,6 +119,19 @@ process_urls() {
     wait
 }
 
+# Function to clean up URLs file
+cleanup_urls() {
+    log_message "Cleaning up URLs file - removing 404s"
+    local temp_file="cleaned_urls.txt"
+    while IFS=: read -r url status; do
+        if [[ "$status" != "404" ]]; then
+            echo "$url" >> "$temp_file"
+        fi
+    done < "$CHECKPOINT_FILE"
+    mv "$temp_file" "urls.txt"
+    log_message "URLs cleanup completed"
+}
+
 # Main execution
 
 # Initialize log file
@@ -101,6 +144,9 @@ touch "$CHECKPOINT_FILE"
 log_message "Starting URL processing with $THREADS threads"
 process_urls
 
+# Clean up URLs file
+cleanup_urls
+
 # Cleanup
 log_message "Cleaning up temporary files"
 rm -rf "$TEMP_DIR"
@@ -111,4 +157,5 @@ log_message "Process completed"
 total_processed=$(($(wc -l < "$CHECKPOINT_FILE")))
 total_saved=$(grep -c ":saved" "$CHECKPOINT_FILE")
 total_failed=$(grep -c ":failed" "$CHECKPOINT_FILE")
-log_message "Summary: Processed $total_processed URLs, Saved $total_saved JSONs, Failed $total_failed"
+total_404=$(grep -c ":404" "$CHECKPOINT_FILE")
+log_message "Summary: Processed $total_processed URLs, Saved $total_saved JSONs, Failed $total_failed, 404s $total_404"
