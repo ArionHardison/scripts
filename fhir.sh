@@ -5,13 +5,22 @@ THREADS=10
 CHECKPOINT_FILE="checkpoint.txt"
 LOG_FILE="url_check.log"
 TEMP_DIR="temp_results"
+JSON_DIR="json_files"
 
-# Create temp directory if it doesn't exist
+# Create directories if they don't exist
 mkdir -p "$TEMP_DIR"
+mkdir -p "$JSON_DIR"
 
 # Function to log messages with timestamp
 log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Function to sanitize filename
+sanitize_filename() {
+    local url="$1"
+    # Extract the resource name from URL and add .json extension
+    echo "$url" | sed 's|.*/\([^/]*\)\.json\.html|\1.json|'
 }
 
 # Function to process a single URL
@@ -28,18 +37,22 @@ process_url() {
     # Log start of processing
     log_message "Thread $thread_id processing: $url"
 
-    # Check if URL returns 404 or contains error text
+    # Get the content and extract JSON
     response=$(curl -s "$url")
-    if [[ $? -eq 22 ]] || [[ $response =~ "404 File Not Found" ]] || [[ $response =~ "The file you were looking for was not found" ]]; then
-        # Replace -example with -examples in URL
-        new_url="${url/example.json/examples.json}"
-        echo "${url}:${new_url}" >> "$CHECKPOINT_FILE"
-        echo "$new_url" >> "$temp_file"
-        log_message "Thread $thread_id modified: $url -> $new_url"
+    if [[ $response =~ \<pre[^>]*class=\"json\"[^>]*\>(.*)\</pre\> ]]; then
+        json_content="${BASH_REMATCH[1]}"
+        
+        # Create filename from URL
+        filename=$(sanitize_filename "$url")
+        
+        # Save JSON content to file
+        echo "$json_content" > "$JSON_DIR/$filename"
+        
+        log_message "Thread $thread_id saved JSON to: $filename"
+        echo "${url}:saved" >> "$CHECKPOINT_FILE"
     else
-        echo "${url}:unchanged" >> "$CHECKPOINT_FILE"
-        echo "$url" >> "$temp_file"
-        log_message "Thread $thread_id unchanged: $url"
+        log_message "Thread $thread_id failed to extract JSON from: $url"
+        echo "${url}:failed" >> "$CHECKPOINT_FILE"
     fi
 
     # Update progress
@@ -79,7 +92,7 @@ process_urls() {
 # Main execution
 
 # Initialize log file
-echo "Starting URL check process at $(date)" > "$LOG_FILE"
+echo "Starting JSON extraction process at $(date)" > "$LOG_FILE"
 
 # Create checkpoint file if it doesn't exist
 touch "$CHECKPOINT_FILE"
@@ -87,14 +100,6 @@ touch "$CHECKPOINT_FILE"
 # Process URLs
 log_message "Starting URL processing with $THREADS threads"
 process_urls
-
-# Combine results
-log_message "Combining results"
-cat "$TEMP_DIR"/result_*.txt > "new_urls.txt"
-
-# Replace original file
-log_message "Updating original file"
-mv "new_urls.txt" "urls.txt"
 
 # Cleanup
 log_message "Cleaning up temporary files"
@@ -104,5 +109,6 @@ log_message "Process completed"
 
 # Print summary
 total_processed=$(($(wc -l < "$CHECKPOINT_FILE")))
-total_modified=$(grep -c ":http" "$CHECKPOINT_FILE")
-log_message "Summary: Processed $total_processed URLs, Modified $total_modified URLs"
+total_saved=$(grep -c ":saved" "$CHECKPOINT_FILE")
+total_failed=$(grep -c ":failed" "$CHECKPOINT_FILE")
+log_message "Summary: Processed $total_processed URLs, Saved $total_saved JSONs, Failed $total_failed"
