@@ -4,57 +4,28 @@ require 'anthropic'
 require 'langchain'
 require 'json'
 require 'aws-sdk-s3'
-require 'mutex'
+require 'mutex_m'
 
 class AgencyCommunicator
-  attr_reader :agency_data, :client, :implementation_version
+  extend Mutex_m
+
+  attr_reader :agency_data, :implementation_version
 
   def initialize(json_data)
-    @mutex = Mutex.new
-    @agency_data = json_data
-    setup_ai_clients
-    
-    @mutex.synchronize do
+    self.class.synchronize do
+      @agency_data = json_data
+      setup_ai_clients
+
       @implementation_version = fetch_latest_implementation
       optimize_and_rebuild_implementation
+
+      # Dynamically create methods based on user stories
+      create_user_story_methods
+
+      # Set up contact methods based on available channels
+      setup_contact_methods
     end
-    
-    # Dynamically create methods based on user stories
-    create_user_story_methods
-    
-    # Set up contact methods based on available channels
-    setup_contact_methods
   end
-
-  # Implementation notes
-  IMPLEMENTATION_NOTES = <<~NOTES
-    This implementation:
-    1. Uses metaprogramming to dynamically create methods based on user stories and contact information.
-    2. Leverages Claude AI to generate contextual responses and recommendations.
-    3. Provides multiple communication channels (email, phone, web forms).
-    4. Handles API calls and web form submissions using Faraday.
-    5. Processes and structures AI responses into actionable steps.
-    6. Includes error handling and logging.
-    7. Supports the user stories defined in the JSON data.
-
-    To use this class, you'll need to:
-    1. Set up environment variables:
-       export ANTHROPIC_API_KEY='your-key-here'
-
-    2. Install required gems:
-       bundle add ruby-openai faraday anthropic langchainrb sinatra thin rack
-
-    3. Create appropriate error handling and logging as needed for your specific use case.
-
-    The class can be extended with additional features such as:
-    - Rate limiting for API calls
-    - Caching of responses
-    - More sophisticated AI prompt engineering
-    - Additional communication channels
-    - Authentication handling
-    - Response validation
-    - Automated follow-ups
-  NOTES
 
   private
 
@@ -72,53 +43,61 @@ class AgencyCommunicator
     )
     JSON.parse(response.body.read)
   rescue StandardError => e
-    # Fallback to local implementation if fetch fails
-    JSON.parse(IMPLEMENTATION_NOTES)
+    # Handle error if fetch fails
+    puts "Failed to fetch implementation: #{e.message}"
+    {}
   end
 
   def optimize_and_rebuild_implementation
     # Get optimization suggestions from multiple AI models
     claude_suggestions = get_claude_optimization
     openai_suggestions = get_openai_optimization
-    
+
     # Merge and apply optimizations
     optimized_implementation = merge_optimizations(
       claude_suggestions,
       openai_suggestions
     )
-    
+
     # Update the implementation in storage
     update_implementation(optimized_implementation)
-    
+
     # Dynamically rebuild the class based on new implementation
     rebuild_class(optimized_implementation)
   end
 
   def get_claude_optimization
-    @claude_client.messages.create(
-      model: 'claude-3-opus-20240229',
-      messages: [{
-        role: 'user',
-        content: "Analyze and optimize this implementation: #{@implementation_version}"
-      }]
+    response = @claude_client.completions.create(
+      prompt: "Optimize the following implementation notes for better performance and maintainability:\n\n#{@implementation_version.to_json}",
+      model: 'claude-1',
+      max_tokens_to_sample: 1024
     )
+    JSON.parse(response.completion)
+  rescue StandardError => e
+    puts "Claude optimization failed: #{e.message}"
+    {}
   end
 
   def get_openai_optimization
-    @openai_client.chat(
+    response = @openai_client.chat(
       parameters: {
         model: 'gpt-4',
         messages: [{
           role: 'user',
-          content: "Analyze and optimize this implementation: #{@implementation_version}"
+          content: "Optimize the following implementation notes for better performance and maintainability:\n\n#{@implementation_version.to_json}"
         }]
       }
     )
+    JSON.parse(response.dig('choices', 0, 'message', 'content'))
+  rescue StandardError => e
+    puts "OpenAI optimization failed: #{e.message}"
+    {}
   end
 
   def merge_optimizations(*suggestions)
     # Implement logic to merge different AI suggestions
-    # Return consolidated optimization recommendations
+    # For simplicity, we'll assume the suggestions are hashes and merge them
+    suggestions.reduce({}) { |acc, suggestion| acc.merge(suggestion) }
   end
 
   def update_implementation(optimized_version)
@@ -129,14 +108,26 @@ class AgencyCommunicator
       body: optimized_version.to_json
     )
   rescue StandardError => e
-    Rails.logger.error("Failed to update implementation: #{e.message}")
+    puts "Failed to update implementation: #{e.message}"
   end
 
   def rebuild_class(implementation)
-    self.class.class_eval do
-      implementation['methods'].each do |method_def|
-        define_method(method_def['name']) do |*args|
-          # Implement method based on definition
+    self.class.synchronize do
+      self.class.class_eval do
+        # Remove existing dynamically defined methods to prevent duplication
+        implementation['methods'].each do |method_def|
+          if method_defined?(method_def['name'].to_sym)
+            remove_method(method_def['name'].to_sym)
+          end
+        end
+
+        # Define new methods based on the implementation
+        implementation['methods'].each do |method_def|
+          define_method(method_def['name']) do |*args|
+            # Implement method based on definition
+            # For example, execute the code provided in the method definition
+            instance_eval(method_def['code'])
+          end
         end
       end
     end
@@ -200,39 +191,36 @@ class AgencyCommunicator
 
   def handle_user_story(story, params)
     prompt = generate_prompt(story, params)
-    
-    response = @client.messages.create(
-      model: 'claude-3-opus-20240229',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: prompt }]
+    response = @claude_client.completions.create(
+      prompt: prompt,
+      model: 'claude-1',
+      max_tokens_to_sample: 1024
     )
-
-    process_ai_response(response, story)
+    process_ai_response(response.completion, story)
   end
 
   def generate_prompt(story, params)
     <<~PROMPT
       Acting as an AI assistant for #{@agency_data['agency_title']},
       help fulfill this user story:
-      
+
       Type: #{story['type']}
       Description: #{story['description']}
-      
+
       Additional parameters: #{params}
-      
+
       Available contact methods:
       #{@agency_data['contact_info'].to_json}
-      
+
       Please provide specific steps and recommendations to fulfill this request.
     PROMPT
   end
 
-  def process_ai_response(response, story)
-    # Parse AI response and take appropriate actions
+  def process_ai_response(response_content, story)
     {
       story: story,
-      ai_recommendation: response.content,
-      next_steps: extract_next_steps(response.content),
+      ai_recommendation: response_content,
+      next_steps: extract_next_steps(response_content),
       contact_methods: relevant_contact_methods(story)
     }
   end
@@ -252,12 +240,12 @@ class AgencyCommunicator
   def contact_via_web(url, params)
     # Implement web form submission or API call
     conn = Faraday.new(url: url)
-    
+
     begin
       response = conn.get do |req|
         req.params = params
       end
-      
+
       {
         success: response.success?,
         status: response.status,
