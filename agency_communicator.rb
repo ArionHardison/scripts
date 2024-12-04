@@ -3,13 +3,21 @@ require 'faraday'
 require 'anthropic'
 require 'langchain'
 require 'json'
+require 'aws-sdk-s3'
+require 'mutex'
 
 class AgencyCommunicator
-  attr_reader :agency_data, :client
+  attr_reader :agency_data, :client, :implementation_version
 
   def initialize(json_data)
+    @mutex = Mutex.new
     @agency_data = json_data
-    @client = Anthropic::Client.new(api_key: ENV['ANTHROPIC_API_KEY'])
+    setup_ai_clients
+    
+    @mutex.synchronize do
+      @implementation_version = fetch_latest_implementation
+      optimize_and_rebuild_implementation
+    end
     
     # Dynamically create methods based on user stories
     create_user_story_methods
@@ -49,6 +57,90 @@ class AgencyCommunicator
   NOTES
 
   private
+
+  def setup_ai_clients
+    @claude_client = Anthropic::Client.new(api_key: ENV['ANTHROPIC_API_KEY'])
+    @openai_client = OpenAI::Client.new(access_token: ENV['OPENAI_API_KEY'])
+  end
+
+  def fetch_latest_implementation
+    # Fetch from JSON bucket - example using AWS S3
+    s3_client = Aws::S3::Client.new
+    response = s3_client.get_object(
+      bucket: ENV['IMPLEMENTATION_BUCKET'],
+      key: 'implementation_notes.json'
+    )
+    JSON.parse(response.body.read)
+  rescue StandardError => e
+    # Fallback to local implementation if fetch fails
+    JSON.parse(IMPLEMENTATION_NOTES)
+  end
+
+  def optimize_and_rebuild_implementation
+    # Get optimization suggestions from multiple AI models
+    claude_suggestions = get_claude_optimization
+    openai_suggestions = get_openai_optimization
+    
+    # Merge and apply optimizations
+    optimized_implementation = merge_optimizations(
+      claude_suggestions,
+      openai_suggestions
+    )
+    
+    # Update the implementation in storage
+    update_implementation(optimized_implementation)
+    
+    # Dynamically rebuild the class based on new implementation
+    rebuild_class(optimized_implementation)
+  end
+
+  def get_claude_optimization
+    @claude_client.messages.create(
+      model: 'claude-3-opus-20240229',
+      messages: [{
+        role: 'user',
+        content: "Analyze and optimize this implementation: #{@implementation_version}"
+      }]
+    )
+  end
+
+  def get_openai_optimization
+    @openai_client.chat(
+      parameters: {
+        model: 'gpt-4',
+        messages: [{
+          role: 'user',
+          content: "Analyze and optimize this implementation: #{@implementation_version}"
+        }]
+      }
+    )
+  end
+
+  def merge_optimizations(*suggestions)
+    # Implement logic to merge different AI suggestions
+    # Return consolidated optimization recommendations
+  end
+
+  def update_implementation(optimized_version)
+    s3_client = Aws::S3::Client.new
+    s3_client.put_object(
+      bucket: ENV['IMPLEMENTATION_BUCKET'],
+      key: 'implementation_notes.json',
+      body: optimized_version.to_json
+    )
+  rescue StandardError => e
+    Rails.logger.error("Failed to update implementation: #{e.message}")
+  end
+
+  def rebuild_class(implementation)
+    self.class.class_eval do
+      implementation['methods'].each do |method_def|
+        define_method(method_def['name']) do |*args|
+          # Implement method based on definition
+        end
+      end
+    end
+  end
 
   def create_user_story_methods
     return unless @agency_data['user_stories']
