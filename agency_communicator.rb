@@ -18,6 +18,36 @@ class AgencyCommunicator
     setup_contact_methods
   end
 
+  # Implementation notes
+  IMPLEMENTATION_NOTES = <<~NOTES
+    This implementation:
+    1. Uses metaprogramming to dynamically create methods based on user stories and contact information.
+    2. Leverages Claude AI to generate contextual responses and recommendations.
+    3. Provides multiple communication channels (email, phone, web forms).
+    4. Handles API calls and web form submissions using Faraday.
+    5. Processes and structures AI responses into actionable steps.
+    6. Includes error handling and logging.
+    7. Supports the user stories defined in the JSON data.
+
+    To use this class, you'll need to:
+    1. Set up environment variables:
+       export ANTHROPIC_API_KEY='your-key-here'
+
+    2. Install required gems:
+       bundle add ruby-openai faraday anthropic langchainrb sinatra thin rack
+
+    3. Create appropriate error handling and logging as needed for your specific use case.
+
+    The class can be extended with additional features such as:
+    - Rate limiting for API calls
+    - Caching of responses
+    - More sophisticated AI prompt engineering
+    - Additional communication channels
+    - Authentication handling
+    - Response validation
+    - Automated follow-ups
+  NOTES
+
   private
 
   def create_user_story_methods
